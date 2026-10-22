@@ -1,0 +1,18 @@
+{
+ "sha": "a6ae035ccc1b393ee0c6060b1801b4c0e2cc68f50caa267d5db76c9e41c43fa2",
+ "rows": 492,
+ "totals": {
+  "paid": "3408058357911831759",
+  "earned": "3408058357911831760",
+  "nfts": 1832,
+  "contributed": "3409058357911831783",
+  "fee": "85201458947795794",
+  "completed_bounties": 482,
+  "excluded": {
+   "cancelled": 257,
+   "never_completed": 187,
+   "fraudulent_exploit_claim": 33,
+   "refunded/withdrawn": 31
+  }
+ }
+}
