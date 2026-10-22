@@ -1,72 +1,95 @@
-# poidh v2 — per-wallet ETH & NFT ledger (Base + Arbitrum One)
+# poidh v2 — per-wallet ETH & NFT ledger, rebuilt from contract state
 
 Datasets for [poidh #1499](https://poidh.xyz/base/bounty/1499) (*poidh Base v2 data*) and
-[poidh #336](https://poidh.xyz/arbitrum/bounty/336) (*poidh Arbitrum v2 data*), rebuilt
-directly from the chain.
+[poidh #336](https://poidh.xyz/arbitrum/bounty/336) (*poidh Arbitrum v2 data*).
+
+Every number here is read **straight from the protocol's own contract state** with
+read-only `eth_call` / Multicall3 — no indexer, no third-party dataset, no log scrape.
+That matters: a log scrape silently truncates, and a truncated ledger that looks
+complete is worse than no ledger at all.
 
 | chain | main contract | rows | SHA-256 of the full CSV |
 |---|---|---|---|
-| Base | `0xb502c5856f7244dccdd0264a541cc25675353d39` | 492 | `a6ae035ccc1b393e…` (see `*_SHA256.txt`) |
-| Arbitrum One | `0x0aa50ce0d724cc28f8f7af4630c32377b4d5c27d` | 93 | `0475470659c0cb7e…` (see `*_SHA256.txt`) |
+| Base | `0xb502c5856f7244dccdd0264a541cc25675353d39` | 504 | see `base_SHA256.txt` |
+| Arbitrum One | `0x0aa50ce0d724cc28f8f7af4630c32377b4d5c27d` | 92 | see `arbitrum_SHA256.txt` |
 
 NFT collection (same address on both chains): `0xddfb1a53e7b73dba09f79fca24765c593d447a80`
 
 Files: `base_wallets.csv`, `arbitrum_wallets.csv` (full), `*_wallets_demo.csv` (first 15 +
-last 15 rows + reconciliation), `*_preview.png`, `*_SHA256.txt`, `verify_v2.py`, `build_v2.py`.
+last 15 rows + the full reconciliation), `*_preview.png`, `*_SHA256.txt`,
+`verify_v2_state.js` (recomputes everything from the chain and diffs a candidate CSV),
+`verify_v2.py` (an independent log-based rebuild, kept as a second opinion).
 
-## Definitions (every number is unambiguous)
+## How it is read
+
+* `bounties(id)` for every id in `0..bountyCounter-1` → issuer, escrowed amount, claimer,
+  winning claim id.
+* `getParticipants(bountyId)` for every settled bounty → the crowdfund contribution split.
+* `ownerOf(tokenId)` for every id in `0..totalSupply-1` → who holds each poidh v2 NFT right now.
+* A bounty counts as **completed** when `claimer != 0` **and** `claimer != issuer`:
+  `cancelSoloBounty` / `cancelOpenBounty` write `claimer = issuer` and refund the pool, so
+  cancelled bounties are excluded by construction, as are bounties that never settled.
+
+## The columns
 
 | Column | Definition |
 |---|---|
-| `eth_paid_out_wei` | the payout of each **completed** bounty, attributed to the wallets that **contributed** to it (issuer amount + every `BountyJoined` contribution), pro-rata. Never total deposits. |
-| `eth_earned_wei` | **gross** ETH won by each wallet from legitimately completed bounties, **before** the 2.5% protocol fee (a 1 ETH win counts as 1 ETH). |
-| `eth_contributed_wei` | the raw ETH each wallet actually put into those completed bounties. |
-| `nfts_held` | poidh v2 NFTs currently held. The protocol contract's own holdings are reported **as a separate row**, not attributed to users. |
+| `eth_paid_out_wei` / `eth_paid_out` | the payout of each **completed** bounty, attributed to the wallets that **contributed** to it (issuer amount plus every `BountyJoined` contribution), pro-rata. Never total deposits. |
+| `eth_earned_wei` / `eth_earned` | **gross** ETH won from legitimately completed bounties, **before** the 2.5% protocol fee (a 1 ETH win counts as 1 ETH). |
+| `eth_received_net_wei` / `eth_received_net` | what the winner actually received: gross − the 2.5% fee that goes to the treasury. |
+| `eth_contributed_wei` / `eth_contributed` | the raw ETH each wallet actually put into those completed bounties. |
+| `nfts_held` | poidh v2 NFTs currently held. The protocol contract's own custody (the NFTs of claims that were never accepted) is reported as **its own row**, not attributed to users. |
+| `label` | non-empty only for that protocol-custody row. |
 
-The gross payout of a completed bounty is recovered exactly from the fee the contract
-recorded: `fee = amount * 25 / 1000`, so `amount = fee * 40`. That is used for every
-payout figure, so crowdfunded bounties are handled without guessing.
+Both readings of "paid out" are in the file on purpose: the issuer-side gross and the
+claimant-side net are different numbers, and a reader should never have to guess which
+one a column holds.
 
-## Dec 8 2025 exploit — and how it is excluded
+## The December 8 2025 exploit, and how it is excluded
 
-poidh v2 was exploited on **2025-12-08** through a flaw in the open-bounty system. From the
-logs, the whole attack is **one transaction**:
-`0x0545a4e5800632ba2194fb9349264ff7f3d3bb18d28ee168d57369b14422f11f`
-— 33 claims accepted in a single call, all with claimant
-`0xcb18f71e12b85058974f181e8cca769ab5eedbbd`, each claiming a solo (single-contributor)
-bounty and draining its escrow.
+The exploit is a handful of transactions, not a long tail:
 
-Everything attributable to that address is excluded, and so is every bounty whose acceptance
-came from that transaction. A whitehat sweep then emptied the contracts (Base
-`0xdd1cb64cd…`, Arbitrum `0x6b5393a6…`) and users were refunded, so bounties that were
-withdrawn instead of paid out are excluded too.
+* `0x0545a4e5800632ba2194fb9349264ff7f3d3bb18d28ee168d57369b14422f11f` — 33 claims accepted
+  in a single call, all with claimant `0xcb18f71e12b85058974f181e8cca769ab5eedbbd`, each
+  claiming a solo (single-contributor) bounty and draining its escrow.
+* `0xc29091802e4e95eafe0b8b3be53736ccce6dab6928fc978b5876c6c9be2539c4` — 3 more claims from
+  the same attack.
+* bounty `450` (2026-07-22, winner `0x0dA89b38…`) — a later single-bounty abuse.
 
-| chain | completed | excluded: fraudulent exploit claims | cancelled | never completed | refunded/withdrawn |
-|---|---|---|---|---|---|
-| Base | 482 | 33 | 257 | 187 | 31 |
-| Arbitrum | 111 | 0 | 44 | 23 | 2 |
+Every bounty settled inside those transactions is excluded, and so is the NFT minted for each
+fraudulent claim. On Arbitrum no exploit completion occurred at all; the whitehat rescue
+`0x6b5393a6…` settled a *cancelled* bounty and is therefore excluded by the
+`claimer == issuer` rule, not by a special case.
 
-## Reconciliation
+| chain | settled | excluded as fraudulent | completed legitimate | NFTs (protocol custody) |
+|---|---|---|---|---|
+| Base | 532 | 37 (0.180285 ETH) | 495 | 5 283 (4 788) |
+| Arbitrum | 112 | 0 | 112 | 437 (325) |
 
-Base: `sum(eth_earned) = 3.408058358 ETH`, `sum(eth_paid_out) = 3.408058358 ETH`,
-`sum(eth_contributed) = 3.409058358 ETH`, protocol fee `0.085201459 ETH` = **exactly 2.5 %** of
-gross, `1832` NFTs currently held (of which `1676` are held by the protocol contract itself,
-reported as their own row).
+## Reconciliation (to the wei)
 
-Arbitrum: `sum(eth_earned) = 0.316972790 ETH`, `sum(eth_paid_out) = 0.316972790 ETH`,
-protocol fee `0.007924320 ETH` = **exactly 2.5 %** of gross, `437` NFTs (of which `325` are
-held by the protocol contract).
+**Base** — `sum(eth_earned) = 3.980363457911831783 ETH`,
+`sum(eth_paid_out) = 3.980363457911831783 ETH`,
+`sum(eth_received_net) = 3.880854371464035989 ETH`,
+protocol fee `0.099509086447795794 ETH` = **exactly 2.5 %** of gross,
+5 283 NFTs currently held, 4 788 of them in the protocol contract's custody.
+
+**Arbitrum** — `sum(eth_earned) = 0.31808279 ETH`, `sum(eth_paid_out) = 0.31808279 ETH`,
+`sum(eth_received_net) = 0.31013072025 ETH`, protocol fee `0.00795206975 ETH` = **exactly
+2.5 %** of gross, 437 NFTs (325 in protocol custody).
 
 ## Verify it yourself
 
 ```bash
-python3 verify_v2.py base            # recompute the Base dataset from the chain
-python3 verify_v2.py arbitrum
-python3 verify_v2.py base 0xabc…      # print the chain rows for one wallet
+node verify_v2_state.js base            # recompute the Base dataset from the chain
+node verify_v2_state.js arbitrum
+node verify_v2_state.js base candidate.csv   # diff a candidate CSV wallet by wallet
+python3 verify_v2.py base                # the independent log-based rebuild
 ```
 
-The verifier re-reads the contract logs and recomputes every wallet row, so any figure in
-these CSVs (or in a competing submission) can be checked without trusting the submitter.
+Two independent rebuilds (contract state and event logs) plus a verifier means any figure
+here — in this file or in a competing submission — can be checked in seconds without
+trusting the submitter.
 
 ---
 
